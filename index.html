@@ -322,6 +322,11 @@ table.bene td:nth-child(2),table.bene th:nth-child(2){text-align:right}
 .fac .eff b{color:var(--bone);font-weight:500}
 .fac button{align-self:flex-start;margin-top:auto}
 
+.xfer{display:flex;flex-direction:column;gap:8px}
+.xfer textarea{font:12px/1.4 var(--f-mono);color:var(--bone);background:var(--iron-2);border:1px solid var(--seam);border-radius:10px;padding:8px 10px;width:100%;resize:vertical;word-break:break-all}
+.xfer .note.ok{color:var(--ok)}.xfer .note.bad{color:var(--drop)}
+.file-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center}
+.file-btn input{position:absolute;inset:0;opacity:0;cursor:pointer}
 /* ---------- armory & lineages ---------- */
 .arm-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;align-items:start}
 @media (max-width:980px){.arm-grid{grid-template-columns:minmax(0,1fr)}}
@@ -723,6 +728,26 @@ table.bene td:nth-child(2),table.bene th:nth-child(2){text-align:right}
             <label class="toggle"><input type="checkbox" id="optFast"> 빠른 강화</label>
             <span style="flex:1"></span>
             <button class="ghost small" id="reset" type="button">처음부터</button>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="split">
+            <span class="label">진행 상황 옮기기</span>
+            <div class="row"><button class="ghost small" id="xferOut" type="button">내보내기</button><button class="ghost small" id="xferIn" type="button">가져오기</button></div>
+          </div>
+          <p class="note">claude.ai 링크와 웹 사이트 사이, 또는 다른 브라우저로 진행 상황을 옮길 때 써요. 내보내기로 만든 저장 코드를 옮길 곳에서 가져오기에 붙여넣으면 돼요.</p>
+          <div class="xfer" id="xferBox" hidden>
+            <span class="label" id="xferMode"></span>
+            <textarea id="xferCode" rows="4" spellcheck="false" autocomplete="off" aria-label="저장 코드"></textarea>
+            <div class="row" id="xferOutActs">
+              <button class="enhance compact" id="xferCopy" type="button"><span class="big">코드 복사</span></button>
+            </div>
+            <div class="row" id="xferInActs">
+              <label class="ghost small file-btn">파일에서 불러오기<input type="file" id="xferFile" accept=".txt,text/plain"></label>
+              <button class="enhance compact" id="xferApply" type="button"><span class="big" id="xferApplyLabel">가져오기</span></button>
+            </div>
+            <p class="note" id="xferMsg" role="status" aria-live="polite"></p>
           </div>
         </div>
       </aside>
@@ -2907,6 +2932,84 @@ function renderArmory(){
   $('shopList').innerHTML = list.join('') || '<li class="empty">아직 살 수 있는 검이 없어요.</li>';
 }
 
+
+/* ================= 진행 상황 옮기기 (저장 코드) =================
+   저장 코드 = "SWF1:" + 진행 상황 JSON(base64). 계정 정보(owner)는 빼고 옮겨요. */
+const SAVE_PREFIX = 'SWF1:';
+let xferArm = null, xferArmT = 0;
+function exportCode(){
+  const st = JSON.parse(JSON.stringify(S));
+  delete st.owner;
+  st.exportedAt = Date.now();
+  return SAVE_PREFIX + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
+}
+function parseCode(text){
+  const t = String(text || '').replace(/\s+/g, '');
+  if (!t) throw new Error('저장 코드를 붙여넣어 주세요.');
+  if (!t.startsWith(SAVE_PREFIX)) throw new Error('저장 코드는 SWF1: 로 시작해야 해요. 코드 전체가 복사됐는지 확인해 주세요.');
+  let st;
+  try { st = JSON.parse(decodeURIComponent(escape(atob(t.slice(SAVE_PREFIX.length))))); }
+  catch(e){ throw new Error('저장 코드가 중간에 잘린 것 같아요. 내보내기에서 다시 복사해 주세요.'); }
+  if (!st || typeof st !== 'object' || typeof st.gold !== 'number' || typeof st.level !== 'number') throw new Error('이 게임의 저장 코드가 아니에요.');
+  return st;
+}
+const saveSummary = st => `골드 ${fmt(st.gold)} G · 모루 위 +${st.level} · 최고 +${st.best || 0} · ${RANKS[st.rank || 0].name}` + ((st.vault || []).length ? ` · 보관한 검 ${st.vault.length}자루` : '');
+function xferMsg(t, kind){ const el = $('xferMsg'); el.textContent = t; el.className = 'note ' + (kind || ''); }
+function openXfer(mode){
+  clearTimeout(xferArmT); xferArm = null;
+  $('xferBox').hidden = false;
+  $('xferOutActs').hidden = mode !== 'out'; $('xferInActs').hidden = mode !== 'in';
+  const ta = $('xferCode');
+  ta.readOnly = mode === 'out';
+  $('xferApplyLabel').textContent = '가져오기';
+  if (mode === 'out'){
+    $('xferMode').textContent = '내보내기 · 이 코드를 복사해서 옮길 곳의 가져오기에 붙여넣으세요';
+    ta.value = exportCode();
+    xferMsg(`${saveSummary(S)} · 코드 ${fmt(ta.value.length)}자`);
+  } else {
+    $('xferMode').textContent = '가져오기 · 내보내기로 만든 저장 코드를 붙여넣으세요';
+    ta.value = '';
+    xferMsg('지금 진행 상황은 가져온 진행 상황으로 바뀌어요.');
+    ta.focus();
+  }
+}
+function copyCode(){
+  const ta = $('xferCode');
+  const fallback = () => { ta.focus(); ta.select(); xferMsg('자동 복사가 막혀 있어요. 선택된 코드를 Ctrl+C(휴대폰은 길게 눌러 복사)로 복사해 주세요.', 'bad'); };
+  try { navigator.clipboard.writeText(ta.value).then(() => xferMsg(`복사했어요 (${fmt(ta.value.length)}자). 옮길 곳에서 가져오기에 붙여넣으세요.`, 'ok'), fallback); }
+  catch(e){ fallback(); }
+}
+function applyImport(){
+  if (busy || fighting){ xferMsg('강화나 결투가 끝난 뒤에 가져와 주세요.', 'bad'); return; }
+  let st;
+  try { st = parseCode($('xferCode').value); } catch(e){ xferMsg(e.message, 'bad'); return; }
+  const key = $('xferCode').value.length + ':' + st.gold;
+  if (xferArm !== key){
+    xferArm = key; clearTimeout(xferArmT);
+    xferArmT = setTimeout(() => { xferArm = null; $('xferApplyLabel').textContent = '가져오기'; }, 6000);
+    $('xferApplyLabel').textContent = '한 번 더 누르면 덮어써요';
+    xferMsg(`가져올 진행 상황: ${saveSummary(st)}. 지금 진행 상황(${saveSummary(S)})은 사라져요.`, 'bad');
+    return;
+  }
+  clearTimeout(xferArmT); xferArm = null;
+  /* 경매에 맡긴 골드는 돌려받고, 꺼 둔 사이 수입이 두 번 쌓이지 않게 시세 시계를 지금으로 맞춰요 */
+  if (st.auc && st.auc.leader === 'me') st.gold += st.auc.esc || 0;
+  st.auc = null;
+  const keep = {sound:S.sound, fast:S.fast};
+  delete st.owner; delete st.exportedAt;
+  S = normalize(Object.assign(st, keep));
+  if (cloud.uid) S.owner = cloud.uid;
+  S.mk.lastTick = Date.now();
+  bootAt = Date.now();
+  disarm(); $('legend').hidden = true;
+  buildFoes();
+  save(); flushCloud();
+  $('xferBox').hidden = true;
+  render();
+  toast(`진행 상황을 가져왔어요 · ${saveSummary(S)}`, 'good');
+  sfx.fanfare();
+}
+
 /* ================= build static DOM ================= */
 function buildRelics(){
   $('relics').innerHTML = RELICS.map(r => `<article class="relic" data-id="${r.id}">
@@ -3413,6 +3516,16 @@ $('levQuick').addEventListener('click', e => {
 $('levOpen').addEventListener('click', openPos);
 $('levList').addEventListener('click', e => { const b = e.target.closest('button[data-close]'); if (b) closePos(b.dataset.close); });
 $('reset').addEventListener('click', reset);
+$('xferOut').addEventListener('click', () => openXfer('out'));
+$('xferIn').addEventListener('click', () => openXfer('in'));
+$('xferCopy').addEventListener('click', copyCode);
+$('xferApply').addEventListener('click', applyImport);
+$('xferFile').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { $('xferCode').value = String(r.result || ''); xferArm = null; $('xferApplyLabel').textContent = '가져오기'; xferMsg(`${f.name}을(를) 불러왔어요. 가져오기를 눌러 주세요.`); };
+  r.readAsText(f); e.target.value = '';
+});
 $('useScroll').addEventListener('change', e => { S.useScroll = e.target.checked; save(); render(); });
 $('optSound').addEventListener('change', e => { S.sound = e.target.checked; save(); });
 $('optFast').addEventListener('change', e => { S.fast = e.target.checked; save(); });
